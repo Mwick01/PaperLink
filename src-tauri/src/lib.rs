@@ -73,15 +73,74 @@ fn list_documents(
 }
 
 #[tauri::command]
-fn import_pdf(
+async fn import_pdf(
     path: String,
     state: State<'_, AppState>,
 ) -> Result<ImportResult, String> {
-    documents::import_pdf(
-        &state.db,
-        &PathBuf::from(path),
-    )
-    .map_err(|e| e.to_string())
+    let db = state.db.clone();
+    let embeddings = state.embeddings.clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        //
+        // 1. Extract + chunk + save PDF
+        //
+        let result = documents::import_pdf(
+            &db,
+            &PathBuf::from(path),
+        )
+        .map_err(|e| e.to_string())?;
+
+        //
+        // 2. Find chunks that do not yet
+        //    have semantic embeddings
+        //
+        let missing = db
+            .chunks_missing_embeddings(
+                embeddings.model_name()
+            )
+            .map_err(|e| e.to_string())?;
+
+        if missing.is_empty() {
+            return Ok(result);
+        }
+
+        println!(
+            "Generating {} embeddings automatically",
+            missing.len()
+        );
+
+        //
+        // 3. Embed locally
+        //
+        let texts = missing
+            .iter()
+            .map(|(_, text)| text.clone())
+            .collect::<Vec<_>>();
+
+        let vectors = embeddings
+            .embed_many(texts)
+            .map_err(|e| e.to_string())?;
+
+        //
+        // 4. Save vectors into SQLite
+        //
+        for ((chunk_id, _), vector)
+            in missing.into_iter().zip(vectors)
+        {
+            db.save_embedding(
+                chunk_id,
+                embeddings.model_name(),
+                &vector,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+
+        println!("Semantic index ready");
+
+        Ok(result)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

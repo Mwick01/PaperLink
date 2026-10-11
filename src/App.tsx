@@ -121,9 +121,9 @@ export default function App() {
 
     try {
       setBusy("import");
-      setMessage("Extracting and indexing PDF…");
+      setMessage("Extracting, chunking and building semantic index…");
       const result = await invoke<ImportResult>("import_pdf", { path: selected });
-      setMessage(`Indexed ${result.filename} (${result.chunks_added} chunks)`);
+      setMessage(`Indexed ${result.filename} (${result.chunks_added} chunks) — semantic search ready`);
       await refresh();
     } catch (error) {
       setMessage(`Import failed: ${String(error)}`);
