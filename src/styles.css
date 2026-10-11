@@ -60,6 +60,68 @@ input:focus { border-color: #6ee7b7; box-shadow: 0 0 0 3px rgba(110,231,183,.08)
 .result p { margin: 10px 0 0; color: #cbd5e1; font-size: 14px; white-space: pre-wrap; }
 footer { color: #64748b; padding: 5px 2px; font-size: 13px; }
 code { font-family: "SFMono-Regular", Consolas, monospace; }
+.activity-card {
+  margin-bottom: 16px;
+}
+
+.live-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #6ee7b7;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.activity-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.activity-item {
+  display: grid;
+  grid-template-columns: 90px 1fr;
+  gap: 16px;
+  align-items: flex-start;
+  padding: 13px 14px;
+  border: 1px solid #202b3d;
+  border-radius: 12px;
+  background: #0a111a;
+}
+
+.activity-item time {
+  color: #64748b;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  padding-top: 2px;
+}
+
+.activity-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.activity-copy strong {
+  color: #e5e7eb;
+  font-size: 14px;
+}
+
+.activity-copy code {
+  width: fit-content;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #a7f3d0;
+  font-size: 12px;
+}
+
+.activity-copy span {
+  color: #94a3b8;
+  font-size: 12px;
+}
 
 @media (max-width: 800px) {
   .shell { width: min(100% - 24px, 1180px); padding-top: 24px; }

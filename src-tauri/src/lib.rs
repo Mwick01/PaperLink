@@ -2,6 +2,7 @@ mod database;
 mod documents;
 mod mcp;
 mod tunnel;
+mod activity;
 
 use database::{Database, DocumentRow, SearchResult};
 use documents::ImportResult;
@@ -9,11 +10,13 @@ use serde::Serialize;
 use std::path::PathBuf;
 use tauri::{Manager, State};
 use tunnel::TunnelManager;
+use activity::{ActivityEvent, ActivityLog};
 
 #[derive(Clone)]
 struct AppState {
     db: Database,
     tunnel: TunnelManager,
+    activity: ActivityLog,
 }
 
 #[derive(Serialize)]
@@ -58,6 +61,13 @@ async fn stop_tunnel(state: State<'_, AppState>) -> Result<(), String> {
     state.tunnel.stop().await.map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn get_activity(
+    state: State<'_, AppState>,
+) -> Vec<ActivityEvent> {
+    state.activity.list()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -65,11 +75,12 @@ pub fn run() {
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
             let db = Database::open(&app_data_dir.join("knowledge.sqlite"))?;
-            let state = AppState { db: db.clone(), tunnel: TunnelManager::default() };
+            let activity = ActivityLog::default();
+            let state = AppState { db: db.clone(),activity: activity.clone(), tunnel: TunnelManager::default() };
             app.manage(state);
 
             tauri::async_runtime::spawn(async move {
-                if let Err(error) = mcp::serve(db, "127.0.0.1:8765").await {
+                if let Err(error) = mcp::serve(db,activity, "127.0.0.1:8765").await {
                     eprintln!("MCP server stopped: {error:#}");
                 }
             });
@@ -81,7 +92,8 @@ pub fn run() {
             import_pdf,
             search_local,
             start_tunnel,
-            stop_tunnel
+            stop_tunnel,
+            get_activity
         ])
         .run(tauri::generate_context!())
         .expect("error while running PaperLink");

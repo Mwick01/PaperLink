@@ -11,7 +11,6 @@ pub struct Database {
 pub struct DocumentRow {
     pub id: i64,
     pub filename: String,
-    pub path: String,
     pub chunk_count: i64,
 }
 
@@ -45,11 +44,11 @@ impl Database {
     pub fn list_documents(&self) -> anyhow::Result<Vec<DocumentRow>> {
         let conn = self.connection.lock().map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
         let mut stmt = conn.prepare(
-            "SELECT d.id, d.filename, d.path, COUNT(c.id) AS chunk_count\n             FROM documents d\n             LEFT JOIN chunks c ON c.document_id = d.id\n             GROUP BY d.id\n             ORDER BY d.id DESC"
+            "SELECT d.id, d.filename,  COUNT(c.id) AS chunk_count\n             FROM documents d\n             LEFT JOIN chunks c ON c.document_id = d.id\n             GROUP BY d.id\n             ORDER BY d.id DESC"
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(DocumentRow {
-                id: row.get(0)?, filename: row.get(1)?, path: row.get(2)?, chunk_count: row.get(3)?
+                id: row.get(0)?, filename: row.get(1)?,  chunk_count: row.get(2)?
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)

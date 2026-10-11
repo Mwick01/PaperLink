@@ -5,7 +5,6 @@ import { open } from "@tauri-apps/plugin-dialog";
 type DocumentRow = {
   id: number;
   filename: string;
-  path: string;
   chunk_count: number;
 };
 
@@ -30,6 +29,14 @@ type ImportResult = {
   chunks_added: number;
 };
 
+type ActivityEvent = {
+  id: number;
+  timestamp_ms: number;
+  tool: string;
+  detail: string;
+  result: string;
+};
+
 export default function App() {
   const [status, setStatus] = useState<AppStatus | null>(null);
   const [documents, setDocuments] = useState<DocumentRow[]>([]);
@@ -38,6 +45,7 @@ export default function App() {
   const [tunnelUrl, setTunnelUrl] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState("Ready");
+  const [activity, setActivity] = useState<ActivityEvent[]>([]);
 
   const endpoint = useMemo(
     () => tunnelUrl ? `${tunnelUrl}/mcp` : status?.mcp_url ?? "http://127.0.0.1:8765/mcp",
@@ -121,6 +129,25 @@ export default function App() {
     setMessage("MCP endpoint copied");
   }
 
+  async function refreshActivity() {
+  try {
+    const events = await invoke<ActivityEvent[]>("get_activity");
+    setActivity(events);
+  } catch (error) {
+    console.error("Could not load MCP activity", error);
+  }
+
+  useEffect(() => {
+    refreshActivity();
+
+    const timer = window.setInterval(() => {
+      refreshActivity();
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, []);
+}
+
   return (
     <main className="shell">
       <header className="hero">
@@ -186,7 +213,48 @@ export default function App() {
           <small>Requires <code>cloudflared</code> to be installed and available on PATH for this MVP.</small>
         </article>
       </section>
+      <section className="card activity-card">
+        <div className="card-head">
+          <div>
+            <h2>Recent MCP activity</h2>
+            <p>
+              Tool calls received from connected AI clients appear here.
+            </p>
+          </div>
 
+          <div className="live-badge">
+            <span className="dot" />
+            Live
+          </div>
+        </div>
+
+        <div className="activity-list">
+          {activity.length === 0 && (
+            <div className="empty">
+              No MCP tool calls yet.
+            </div>
+          )}
+
+          {activity.map((event) => (
+            <div className="activity-item" key={event.id}>
+              <time>
+                {new Date(event.timestamp_ms).toLocaleTimeString()}
+              </time>
+
+              <div className="activity-copy">
+                <strong>{event.tool}</strong>
+
+                {event.detail && (
+                  <code>{event.detail}</code>
+                )}
+
+                <span>{event.result}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+      
       <section className="card search-card">
         <div className="card-head">
           <div>
