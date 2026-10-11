@@ -64,7 +64,7 @@ impl EmbeddingEngine {
 
         let embeddings = model.embed(
             vec![text],
-            Some(1),
+            None,
         )?;
 
         embeddings
@@ -88,7 +88,7 @@ impl EmbeddingEngine {
 
         let model = self.ensure_loaded(&mut guard)?;
 
-        Ok(model.embed(texts, Some(32))?)
+        Ok(model.embed(texts, None)?)
     }
 
     pub fn model_name(&self) -> &'static str {

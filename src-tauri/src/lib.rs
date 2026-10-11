@@ -5,6 +5,7 @@ mod tunnel;
 mod activity;
 mod embeddings;
 mod hybrid_search;
+mod chunking;
 
 use activity::{
     ActivityEvent,
