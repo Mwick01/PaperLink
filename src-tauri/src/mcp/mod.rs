@@ -4,6 +4,7 @@ use crate::{
     embeddings::EmbeddingEngine,
     hybrid_search,
 };
+use crate::auth::AuthState;
 use rmcp::{handler::server::wrapper::Parameters, schemars, tool, tool_router};
 use rmcp::transport::streamable_http_server::{
     session::local::LocalSessionManager,
@@ -11,6 +12,18 @@ use rmcp::transport::streamable_http_server::{
     StreamableHttpService,
 };
 use serde::Deserialize;
+use axum::{
+    extract::State,
+    http::{
+        header::AUTHORIZATION,
+        HeaderMap,
+        Request,
+        StatusCode,
+    },
+    middleware::{self, Next},
+    response::Response,
+    Router,
+};
 
 
 #[derive(Clone)]
@@ -77,6 +90,15 @@ impl KnowledgeMcp {
             }
         }
     }
+    fn extract_bearer_token(
+    headers: &HeaderMap,
+    ) -> Option<&str> {
+        headers
+            .get(AUTHORIZATION)?
+            .to_str()
+            .ok()?
+            .strip_prefix("Bearer ")
+    }
 
     #[tool(description = "List all documents currently indexed in the user's local knowledge database.")]
     fn list_documents(&self) -> String {
@@ -140,9 +162,43 @@ impl KnowledgeMcp {
             }
         }
     }
+
 }
 
-pub async fn serve(db: Database,activity: ActivityLog,embeddings: EmbeddingEngine, bind_address: &str,) -> anyhow::Result<()> {
+fn extract_bearer_token(
+    headers: &HeaderMap,
+) -> Option<&str> {
+    headers
+        .get(AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")
+}
+
+async fn auth_middleware(
+    State(auth): State<AuthState>,
+    headers: HeaderMap,
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    // No token active = local MCP stays open.
+    if !auth.enabled() {
+        return Ok(next.run(request).await);
+    }
+
+    let token = extract_bearer_token(&headers);
+
+    match token {
+        Some(token) if auth.validate(token) => {
+            Ok(next.run(request).await)
+        }
+
+        _ => Err(StatusCode::UNAUTHORIZED),
+    }
+}
+
+
+pub async fn serve(db: Database,activity: ActivityLog,auth: AuthState,embeddings: EmbeddingEngine, bind_address: &str,) -> anyhow::Result<()> {
     let shared_db = db.clone();
     let shared_activity = activity.clone();
     let shared_embeddings = embeddings.clone();
@@ -160,8 +216,19 @@ pub async fn serve(db: Database,activity: ActivityLog,embeddings: EmbeddingEngin
             .with_json_response(true),
     );
 
-    let router = axum::Router::new().nest_service("/mcp", service);
+    let protected_mcp_router =
+    Router::new()
+        .nest_service(
+            "/mcp",
+            service,
+        )
+        .layer(
+            middleware::from_fn_with_state(
+                auth.clone(),
+                auth_middleware,
+            ),
+        );
     let listener = tokio::net::TcpListener::bind(bind_address).await?;
-    axum::serve(listener, router).await?;
+    axum::serve(listener, protected_mcp_router).await?;
     Ok(())
 }

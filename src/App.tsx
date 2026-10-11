@@ -37,12 +37,18 @@ type ActivityEvent = {
   result: string;
 };
 
+type TunnelConnection = {
+  url: string;
+  token: string;
+};
+
 export default function App() {
   const [status, setStatus] = useState<AppStatus | null>(null);
   const [documents, setDocuments] = useState<DocumentRow[]>([]);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [tunnelUrl, setTunnelUrl] = useState<string | null>(null);
+  const [accessToken, setAccessToken] =useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState("Ready");
   const [activity, setActivity] = useState<ActivityEvent[]>([]);
@@ -150,8 +156,19 @@ export default function App() {
     try {
       setBusy("tunnel");
       setMessage("Starting temporary HTTPS tunnel…");
-      const url = await invoke<string>("start_tunnel");
-      setTunnelUrl(url);
+      const connection =
+        await invoke<TunnelConnection>(
+          "start_tunnel"
+        );
+
+      setTunnelUrl(
+        connection.url
+      );
+
+      setAccessToken(
+        connection.token
+      );
+      
       setMessage("Temporary internet access is online");
     } catch (error) {
       setMessage(`Tunnel failed: ${String(error)}`);
@@ -164,6 +181,7 @@ export default function App() {
     try {
       await invoke("stop_tunnel");
       setTunnelUrl(null);
+      setAccessToken(null);
       setMessage("Temporary internet access stopped");
     } catch (error) {
       setMessage(`Could not stop tunnel: ${String(error)}`);
@@ -219,6 +237,25 @@ export default function App() {
           <span>Current MCP endpoint</span>
           <code>{endpoint}</code>
           <button className="ghost" onClick={copyEndpoint}>Copy</button>
+          {accessToken && (
+            <div>
+              <span>Access token</span>
+
+              <code>
+                {accessToken.slice(0, 8)}
+                ••••••••••••••••
+              </code>
+
+              <button
+                onClick={() =>
+                  navigator.clipboard
+                    .writeText(accessToken)
+                }
+              >
+                Copy token
+              </button>
+            </div>
+          )}
         </article>
       </section>
 
@@ -264,6 +301,7 @@ export default function App() {
             <button className="wide danger" onClick={stopTunnel}>Stop tunnel</button>
           )}
           <small>Requires <code>cloudflared</code> to be installed and available on PATH for this MVP.</small>
+          
         </article>
       </section>
       <section className="card activity-card">

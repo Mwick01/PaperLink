@@ -3421,6 +3421,7 @@ dependencies = [
  "fastembed",
  "hex",
  "pdf-extract",
+ "rand 0.9.5",
  "regex",
  "rmcp",
  "rusqlite",

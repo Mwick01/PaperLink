@@ -31,4 +31,5 @@ sha2 = "0.10"
 hex = "0.4"
 regex = "1"
 fastembed = "7"
+rand = "0.9"
 rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk", branch = "main", features = ["server", "transport-streamable-http-server"] }

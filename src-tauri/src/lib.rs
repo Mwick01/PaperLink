@@ -6,7 +6,9 @@ mod activity;
 mod embeddings;
 mod hybrid_search;
 mod chunking;
+mod auth;
 
+use auth::AuthState;
 use activity::{
     ActivityEvent,
     ActivityLog,
@@ -37,6 +39,7 @@ struct AppState {
     tunnel: TunnelManager,
     activity: ActivityLog,
     embeddings: EmbeddingEngine,
+    auth: AuthState,
 }
 
 #[derive(Serialize)]
@@ -44,6 +47,12 @@ struct AppStatus {
     mcp_url: String,
     document_count: i64,
     chunk_count: i64,
+}
+
+#[derive(Serialize)]
+struct TunnelConnection {
+    url: String,
+    token: String,
 }
 
 #[tauri::command]
@@ -160,23 +169,47 @@ fn search_local(
 #[tauri::command]
 async fn start_tunnel(
     state: State<'_, AppState>,
-) -> Result<String, String> {
-    state.tunnel
+) -> Result<TunnelConnection, String> {
+    let token = state
+        .auth
+        .generate_token()
+        .map_err(|e| e.to_string())?;
+
+    match state
+        .tunnel
         .start(
             "http://127.0.0.1:8765"
         )
         .await
-        .map_err(|e| e.to_string())
+    {
+        Ok(url) => {
+            Ok(TunnelConnection {
+                url,
+                token,
+            })
+        }
+
+        Err(error) => {
+            state.auth.clear();
+
+            Err(error.to_string())
+        }
+    }
 }
 
 #[tauri::command]
 async fn stop_tunnel(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    state.tunnel
+    state
+        .tunnel
         .stop()
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    state.auth.clear();
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -319,6 +352,9 @@ pub fn run() {
                 );
             let embeddings_for_mcp = embeddings.clone();
 
+            let auth = AuthState::default();
+            let auth_for_mcp =auth.clone();
+
             let state = AppState {
                 db: db.clone(),
                 tunnel:
@@ -327,6 +363,8 @@ pub fn run() {
                     activity.clone(),
                 embeddings:
                     embeddings.clone(),
+                auth: 
+                    auth.clone(),
             };
 
             app.manage(state);
@@ -337,6 +375,7 @@ pub fn run() {
                         mcp::serve(
                             db,
                             activity,
+                            auth_for_mcp,
                             embeddings_for_mcp,
                             "127.0.0.1:8765",
                         )
