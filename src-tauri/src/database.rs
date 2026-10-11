@@ -12,6 +12,7 @@ pub struct DocumentRow {
     pub id: i64,
     pub filename: String,
     pub chunk_count: i64,
+    pub collection_id: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -23,6 +24,16 @@ pub struct SearchResult {
     pub text: String,
     pub score: f64,
 }
+
+#[derive(Debug, Serialize)]
+pub struct CollectionRow {
+    pub id: i64,
+    pub name: String,
+    pub parent_id: Option<i64>,
+    pub document_count: i64,
+}
+
+
 
 fn vector_to_blob(vector: &[f32]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(vector.len() * 4);
@@ -84,8 +95,178 @@ impl Database {
         }
         let connection = Connection::open(path)?;
         connection.execute_batch(include_str!("../migrations/001_initial.sql"))?;
+        connection.execute_batch(include_str!("../migrations/002_collections.sql"))?;
         Ok(Self { connection: Arc::new(Mutex::new(connection)) })
     }
+    pub fn document_path(
+        &self,
+        document_id: i64,
+    ) -> anyhow::Result<std::path::PathBuf> {
+        let conn = self.connection()?;
+
+        let path: String = conn.query_row(
+            "SELECT path FROM documents WHERE id = ?1",
+            [document_id],
+            |row| row.get(0),
+        )?;
+
+        Ok(std::path::PathBuf::from(path))
+    }
+
+    pub fn delete_document(
+        &self,
+        document_id: i64,
+    ) -> anyhow::Result<()> {
+        let mut conn = self.connection()?;
+        let tx = conn.transaction()?;
+
+        // FTS rows are maintained manually.
+        tx.execute(
+            "DELETE FROM chunks_fts WHERE document_id = ?1",
+            [document_id],
+        )?;
+
+        // Delete vectors before deleting chunks.
+        tx.execute(
+            "
+            DELETE FROM chunk_embeddings
+            WHERE chunk_id IN (
+                SELECT id
+                FROM chunks
+                WHERE document_id = ?1
+            )
+            ",
+            [document_id],
+        )?;
+
+        tx.execute(
+            "DELETE FROM chunks WHERE document_id = ?1",
+            [document_id],
+        )?;
+
+        tx.execute(
+            "DELETE FROM documents WHERE id = ?1",
+            [document_id],
+        )?;
+
+        tx.commit()?;
+
+        Ok(())
+    }
+
+    pub fn list_collections(
+        &self,
+    ) -> anyhow::Result<Vec<CollectionRow>> {
+        let conn = self.connection()?;
+
+        let mut statement = conn.prepare(
+            "
+            SELECT
+                c.id,
+                c.name,
+                c.parent_id,
+                COUNT(cd.document_id)
+            FROM collections c
+            LEFT JOIN collection_documents cd
+                ON cd.collection_id = c.id
+            GROUP BY c.id
+            ORDER BY c.name COLLATE NOCASE
+            "
+        )?;
+
+        let rows = statement
+            .query_map([], |row| {
+                Ok(CollectionRow {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    parent_id: row.get(2)?,
+                    document_count: row.get(3)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(rows)
+    }
+
+    pub fn create_collection(
+        &self,
+        name: &str,
+        parent_id: Option<i64>,
+    ) -> anyhow::Result<i64> {
+        let conn = self.connection()?;
+
+        conn.execute(
+            "
+            INSERT INTO collections (
+                name,
+                parent_id
+            )
+            VALUES (?1, ?2)
+            ",
+            params![
+                name.trim(),
+                parent_id
+            ],
+        )?;
+
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn move_document_to_collection(
+        &self,
+        document_id: i64,
+        collection_id: Option<i64>,
+    ) -> anyhow::Result<()> {
+        let conn = self.connection()?;
+
+        if let Some(collection_id) = collection_id {
+            conn.execute(
+                "
+                INSERT INTO collection_documents (
+                    document_id,
+                    collection_id
+                )
+                VALUES (?1, ?2)
+
+                ON CONFLICT(document_id)
+                DO UPDATE SET
+                    collection_id = excluded.collection_id
+                ",
+                params![
+                    document_id,
+                    collection_id
+                ],
+            )?;
+        } else {
+            conn.execute(
+                "
+                DELETE FROM collection_documents
+                WHERE document_id = ?1
+                ",
+                [document_id],
+            )?;
+        }
+
+        Ok(())
+    }
+
+    pub fn delete_collection(
+        &self,
+        collection_id: i64,
+    ) -> anyhow::Result<()> {
+        let conn = self.connection()?;
+
+        conn.execute(
+            "
+            DELETE FROM collections
+            WHERE id = ?1
+            ",
+            [collection_id],
+        )?;
+
+        Ok(())
+    }
+
     fn connection(
         &self,
     ) -> anyhow::Result<std::sync::MutexGuard<'_, Connection>> {
@@ -104,11 +285,25 @@ impl Database {
     pub fn list_documents(&self) -> anyhow::Result<Vec<DocumentRow>> {
         let conn = self.connection.lock().map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
         let mut stmt = conn.prepare(
-            "SELECT d.id, d.filename,  COUNT(c.id) AS chunk_count\n             FROM documents d\n             LEFT JOIN chunks c ON c.document_id = d.id\n             GROUP BY d.id\n             ORDER BY d.id DESC"
+            "SELECT
+                d.id,
+                d.filename,
+                COUNT(c.id) AS chunk_count,
+                cd.collection_id
+            FROM documents d
+            LEFT JOIN chunks c
+                ON c.document_id = d.id
+            LEFT JOIN collection_documents cd
+                ON cd.document_id = d.id
+            GROUP BY
+                d.id,
+                d.filename,
+                cd.collection_id
+            ORDER BY d.filename COLLATE NOCASE"
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(DocumentRow {
-                id: row.get(0)?, filename: row.get(1)?,  chunk_count: row.get(2)?
+                id: row.get(0)?, filename: row.get(1)?,  chunk_count: row.get(2)?, collection_id: row.get(3)?,
             })
         })?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)

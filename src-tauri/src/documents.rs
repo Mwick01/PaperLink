@@ -4,7 +4,8 @@ use crate::{
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
 
 #[derive(Debug, Serialize)]
 pub struct ImportResult {
@@ -32,3 +33,41 @@ pub fn import_pdf(db: &Database, path: &Path) -> anyhow::Result<ImportResult> {
 }
 
 
+pub fn find_pdfs(
+    folder: &Path,
+) -> anyhow::Result<Vec<PathBuf>> {
+    let mut results = Vec::new();
+
+    collect_pdfs(folder, &mut results)?;
+
+    results.sort();
+
+    Ok(results)
+}
+
+fn collect_pdfs(
+    folder: &Path,
+    output: &mut Vec<PathBuf>,
+) -> anyhow::Result<()> {
+    for entry in std::fs::read_dir(folder)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.is_dir() {
+            collect_pdfs(&path, output)?;
+            continue;
+        }
+
+        let is_pdf = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.eq_ignore_ascii_case("pdf"))
+            .unwrap_or(false);
+
+        if is_pdf {
+            output.push(path);
+        }
+    }
+
+    Ok(())
+}

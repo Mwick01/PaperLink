@@ -7,6 +7,7 @@ use std::sync::{
 #[derive(Clone, Default)]
 pub struct AuthState {
     token: Arc<RwLock<Option<String>>>,
+    compatibility_mode: Arc<RwLock<bool>>,
 }
 
 impl AuthState {
@@ -15,8 +16,7 @@ impl AuthState {
     ) -> anyhow::Result<String> {
         let mut bytes = [0u8; 32];
 
-        rand::rng()
-            .fill_bytes(&mut bytes);
+        rand::rng().fill_bytes(&mut bytes);
 
         let token = hex::encode(bytes);
 
@@ -24,9 +24,7 @@ impl AuthState {
             .token
             .write()
             .map_err(|_| {
-                anyhow::anyhow!(
-                    "auth state lock poisoned"
-                )
+                anyhow::anyhow!("auth state lock poisoned")
             })?;
 
         *guard = Some(token.clone());
@@ -35,10 +33,12 @@ impl AuthState {
     }
 
     pub fn clear(&self) {
-        if let Ok(mut guard) =
-            self.token.write()
-        {
+        if let Ok(mut guard) = self.token.write() {
             *guard = None;
+        }
+
+        if let Ok(mut guard) = self.compatibility_mode.write() {
+            *guard = false;
         }
     }
 
@@ -48,14 +48,11 @@ impl AuthState {
         self.token
             .read()
             .ok()
-            .and_then(|guard| {
-                guard.clone()
-            })
+            .and_then(|guard| guard.clone())
     }
 
     pub fn enabled(&self) -> bool {
-        self.current_token()
-            .is_some()
+        self.current_token().is_some()
     }
 
     pub fn validate(
@@ -63,9 +60,30 @@ impl AuthState {
         token: &str,
     ) -> bool {
         self.current_token()
-            .map(|expected| {
-                expected == token
-            })
+            .map(|expected| expected == token)
             .unwrap_or(false)
+    }
+
+    pub fn compatibility_mode(&self) -> bool {
+        self.compatibility_mode
+            .read()
+            .map(|guard| *guard)
+            .unwrap_or(false)
+    }
+
+    pub fn set_compatibility_mode(
+        &self,
+        enabled: bool,
+    ) -> anyhow::Result<()> {
+        let mut guard = self
+            .compatibility_mode
+            .write()
+            .map_err(|_| {
+                anyhow::anyhow!("auth state lock poisoned")
+            })?;
+
+        *guard = enabled;
+
+        Ok(())
     }
 }
