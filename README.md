@@ -1,86 +1,55 @@
-# Grevix Local MCP — v0.1
+# PaperLink — Claude Compatibility Mode
 
-A local-first desktop knowledge base that indexes PDF text into SQLite/FTS5 and exposes the retrieval layer through MCP.
+This package adds an explicit compatibility toggle for Claude custom connectors that
+do not expose arbitrary request headers.
 
-## MVP architecture
+## Replace these files
 
-```text
-PDFs
-  ↓
-pdf-extract
-  ↓
-local SQLite + FTS5
-  ├── desktop search UI
-  └── MCP tools on http://127.0.0.1:8765/mcp
-          ↓
-optional cloudflared Quick Tunnel
-          ↓
-browser-based MCP client
-```
+- `src-tauri/src/auth.rs`
+- `src-tauri/src/mcp/mod.rs`
+- `src-tauri/src/lib.rs`
+- `src/App.tsx`
 
-### MCP tools
+Append `src/compatibility-mode.css` to your existing `src/styles.css`.
 
-- `search_documents(query, limit?)`
-- `list_documents()`
-- `read_document(document_id, limit?)`
+## Behaviour
 
-## Requirements
+### Default / secure mode
+Every new Cloudflare tunnel starts with bearer authentication enabled.
 
-- Node.js 20+
-- Rust stable toolchain
-- Platform dependencies required by Tauri v2
-- Optional: `cloudflared` on PATH for the **Start temporary tunnel** button
+Requests must include:
 
-On Windows, install the Tauri prerequisites first (Microsoft C++ Build Tools + WebView2 where needed).
+`Authorization: Bearer <PaperLink token>`
 
-## Run
+### Claude compatibility mode
+When the toggle is enabled, the active temporary tunnel accepts MCP requests
+without a bearer token.
 
-```bash
-npm install
-npm run tauri dev
-```
+Use this only when the Claude connector UI does not let you provide an
+Authorization header.
 
-The app creates its SQLite database inside the OS application-data directory and starts the MCP endpoint at:
+Anyone who obtains the temporary `trycloudflare.com` URL can call the MCP tools
+while compatibility mode is enabled.
 
-```text
-http://127.0.0.1:8765/mcp
-```
+Stopping the tunnel automatically turns compatibility mode off.
 
-## Test the local search
+## Claude setup
 
-1. Start the app.
-2. Click **Add PDF**.
-3. Select a text-based PDF.
-4. Search for a phrase in the bottom search box.
-5. The same database/search function is available via `search_documents` over MCP.
+1. Start temporary internet access in PaperLink.
+2. Enable **Claude compatibility mode**.
+3. In Claude, add the PaperLink `/mcp` URL.
+4. Choose **No sign-in**.
+5. Keep transport as **Streamable HTTP**.
+6. Add the connector.
 
-Scanned/image-only PDFs are intentionally out of scope for v0.1; OCR comes later.
+## Test before Claude
 
-## Temporary browser-access tunnel
+With compatibility mode OFF:
 
-Install Cloudflare's `cloudflared` CLI, then press **Start temporary tunnel** in the app. Internally this runs:
+`npx @modelcontextprotocol/inspector --cli https://YOUR-URL/mcp --transport http --method tools/list`
 
-```bash
-cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8765
-```
+Expected: HTTP 401.
 
-The app captures the generated `https://....trycloudflare.com` URL and displays the full MCP endpoint.
+With compatibility mode ON, run the same command.
 
-> **Security note:** this v0.1 scaffold does not yet add bearer-token authentication to the tunnel endpoint. Use Quick Tunnel only with non-sensitive demo documents until the auth middleware milestone is completed.
-
-## Next milestones
-
-1. Compile/test on Windows and fix any platform-specific issues.
-2. Add bearer-token authentication before using tunnels with private data.
-3. Bundle `cloudflared` as a Tauri sidecar so users do not install it manually.
-4. Add directory import and filesystem change detection.
-5. Add page-aware PDF extraction.
-6. Add local embeddings + vector search and combine them with FTS5 for hybrid retrieval.
-7. Add a connection wizard for Claude/ChatGPT-compatible MCP clients.
-
-## Dependency choices
-
-- Tauri v2 for the desktop shell.
-- `rusqlite` with bundled SQLite for predictable FTS5 behavior on Windows.
-- `pdf-extract` for the initial text-only PDF pipeline.
-- Official `modelcontextprotocol/rust-sdk` (`rmcp`) for Streamable HTTP MCP.
+Expected: PaperLink's MCP tools are returned.

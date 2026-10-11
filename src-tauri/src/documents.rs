@@ -1,7 +1,11 @@
-use crate::database::Database;
+use crate::{
+    chunking::chunk_exam_text,
+    database::Database,
+};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
 
 #[derive(Debug, Serialize)]
 pub struct ImportResult {
@@ -17,7 +21,7 @@ pub fn import_pdf(db: &Database, path: &Path) -> anyhow::Result<ImportResult> {
         anyhow::bail!("No extractable text found. Scanned PDFs will need OCR in a later version.");
     }
 
-    let chunks = chunk_text(&text, 1800, 220);
+    let chunks = chunk_exam_text(&text);
     let file_hash = hex::encode(Sha256::digest(&bytes));
     let filename = path.file_name()
         .and_then(|v| v.to_str())
@@ -28,67 +32,42 @@ pub fn import_pdf(db: &Database, path: &Path) -> anyhow::Result<ImportResult> {
     Ok(ImportResult { document_id, filename, chunks_added: chunks.len() })
 }
 
-fn chunk_text(text: &str, target_chars: usize, overlap_chars: usize) -> Vec<String> {
-    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
-    let paragraphs: Vec<&str> = normalized
-        .split("\n\n")
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
-        .collect();
 
-    let mut chunks = Vec::new();
-    let mut current = String::new();
+pub fn find_pdfs(
+    folder: &Path,
+) -> anyhow::Result<Vec<PathBuf>> {
+    let mut results = Vec::new();
 
-    for paragraph in paragraphs {
-        if current.len() + paragraph.len() + 2 <= target_chars {
-            if !current.is_empty() { current.push_str("\n\n"); }
-            current.push_str(paragraph);
+    collect_pdfs(folder, &mut results)?;
+
+    results.sort();
+
+    Ok(results)
+}
+
+fn collect_pdfs(
+    folder: &Path,
+    output: &mut Vec<PathBuf>,
+) -> anyhow::Result<()> {
+    for entry in std::fs::read_dir(folder)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.is_dir() {
+            collect_pdfs(&path, output)?;
             continue;
         }
 
-        if !current.trim().is_empty() {
-            chunks.push(current.trim().to_string());
-        }
+        let is_pdf = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.eq_ignore_ascii_case("pdf"))
+            .unwrap_or(false);
 
-        let overlap = chunks.last()
-            .map(|last| tail_chars(last, overlap_chars))
-            .unwrap_or_default();
-        current = overlap;
-        if !current.is_empty() { current.push_str("\n\n"); }
-
-        if paragraph.len() <= target_chars {
-            current.push_str(paragraph);
-        } else {
-            for piece in split_by_chars(paragraph, target_chars) {
-                if !current.trim().is_empty() { chunks.push(current.trim().to_string()); }
-                current = tail_chars(piece, overlap_chars);
-                chunks.push(piece.to_string());
-                current.clear();
-            }
+        if is_pdf {
+            output.push(path);
         }
     }
 
-    if !current.trim().is_empty() {
-        chunks.push(current.trim().to_string());
-    }
-    chunks
-}
-
-fn tail_chars(text: &str, count: usize) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    let start = chars.len().saturating_sub(count);
-    chars[start..].iter().collect()
-}
-
-fn split_by_chars(text: &str, max_chars: usize) -> Vec<&str> {
-    if text.len() <= max_chars { return vec![text]; }
-    let mut out = Vec::new();
-    let mut start = 0;
-    while start < text.len() {
-        let mut end = (start + max_chars).min(text.len());
-        while !text.is_char_boundary(end) { end -= 1; }
-        out.push(&text[start..end]);
-        start = end;
-    }
-    out
+    Ok(())
 }
