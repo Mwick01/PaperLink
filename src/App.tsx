@@ -46,11 +46,57 @@ export default function App() {
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState("Ready");
   const [activity, setActivity] = useState<ActivityEvent[]>([]);
+  const [embeddingStatus, setEmbeddingStatus] =useState("");
 
   const endpoint = useMemo(
     () => tunnelUrl ? `${tunnelUrl}/mcp` : status?.mcp_url ?? "http://127.0.0.1:8765/mcp",
     [status, tunnelUrl]
   );
+
+  async function buildEmbeddings() {
+    try {
+      setEmbeddingStatus(
+        "Building semantic index..."
+      );
+
+      const count = await invoke<number>(
+        "build_embeddings"
+      );
+
+      if (count === 0) {
+        setEmbeddingStatus(
+          "Semantic index is already up to date."
+        );
+      } else {
+        setEmbeddingStatus(
+          `Generated ${count} embeddings.`
+        );
+      }
+    } catch (error) {
+      console.error(error);
+
+      setEmbeddingStatus(
+        `Embedding error: ${String(error)}`
+      );
+    }
+  }
+    async function runSemanticSearch() {
+      if (!query.trim()) return;
+
+      try {
+        const results = await invoke<SearchResult[]>(
+          "search_semantic",
+          {
+            query,
+            limit: 5,
+          }
+        );
+
+        setResults(results);
+      } catch (error) {
+        console.error("Semantic search failed:", error);
+      }
+    }
 
   async function refresh() {
     const [nextStatus, nextDocs] = await Promise.all([
@@ -90,7 +136,7 @@ export default function App() {
     if (!query.trim()) return;
     try {
       setBusy("search");
-      const found = await invoke<SearchResult[]>("search_local", { query, limit: 8 });
+      const found = await invoke<SearchResult[]>("search_hybrid", { query, limit: 8 });
       setResults(found);
       setMessage(`${found.length} result${found.length === 1 ? "" : "s"}`);
     } catch (error) {
@@ -146,6 +192,7 @@ export default function App() {
 
     return () => window.clearInterval(timer);
   }, []);
+  
 }
 
   return (
@@ -184,7 +231,13 @@ export default function App() {
             </div>
             <button onClick={addPdf} disabled={busy === "import"}>{busy === "import" ? "Indexing…" : "+ Add PDF"}</button>
           </div>
+          <button onClick={buildEmbeddings}>
+            Build semantic index
+          </button>
 
+          {embeddingStatus && (
+            <p>{embeddingStatus}</p>
+          )}
           <div className="doc-list">
             {documents.length === 0 && <div className="empty">No documents yet. Add a PDF to create your local knowledge base.</div>}
             {documents.map((doc) => (
@@ -254,7 +307,7 @@ export default function App() {
           ))}
         </div>
       </section>
-      
+
       <section className="card search-card">
         <div className="card-head">
           <div>
@@ -269,7 +322,8 @@ export default function App() {
             onKeyDown={(e) => e.key === "Enter" && search()}
             placeholder="e.g. projectile motion, integration by parts, photosynthesis"
           />
-          <button onClick={search} disabled={busy === "search"}>{busy === "search" ? "Searching…" : "Search"}</button>
+          <button onClick={search} disabled={busy === "search"}>{busy === "search" ? "Searching…" : "Search"}</button> 
+          <button onClick={runSemanticSearch}>  Semantic Search</button>
         </div>
 
         <div className="results">

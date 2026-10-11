@@ -1,5 +1,9 @@
-use crate::database::Database;
-use crate::activity::ActivityLog;
+use crate::{
+    activity::ActivityLog,
+    database::Database,
+    embeddings::EmbeddingEngine,
+    hybrid_search,
+};
 use rmcp::{handler::server::wrapper::Parameters, schemars, tool, tool_router};
 use rmcp::transport::streamable_http_server::{
     session::local::LocalSessionManager,
@@ -8,10 +12,12 @@ use rmcp::transport::streamable_http_server::{
 };
 use serde::Deserialize;
 
+
 #[derive(Clone)]
 pub struct KnowledgeMcp {
     db: Database,
     activity: ActivityLog,
+    embeddings: EmbeddingEngine
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -32,16 +38,23 @@ struct ReadDocumentParams {
 
 #[tool_router(server_handler)]
 impl KnowledgeMcp {
-    pub fn new(db: Database,activity: ActivityLog) -> Self { Self { db, activity } }
+    pub fn new(db: Database,activity: ActivityLog,embeddings: EmbeddingEngine) -> Self { Self { db, activity,embeddings } }
 
-    #[tool(description = "Search the user's locally indexed documents. Returns relevant document chunks with local document IDs and filenames.")]
+    #[tool(
+    description = "Search the user's locally indexed documents using hybrid keyword and semantic retrieval. Returns relevant document chunks with local document IDs and filenames."
+    )]
     fn search_documents(
         &self,
         Parameters(params): Parameters<SearchParams>,
     ) -> String {
         let limit = params.limit.unwrap_or(5).clamp(1, 20);
 
-        match self.db.search(&params.query, limit) {
+        match hybrid_search::hybrid_search(
+            &self.db,
+            &self.embeddings,
+            &params.query,
+            limit,
+        ) {
             Ok(results) => {
                 self.activity.record(
                     "search_documents",
@@ -129,14 +142,16 @@ impl KnowledgeMcp {
     }
 }
 
-pub async fn serve(db: Database,activity: ActivityLog, bind_address: &str) -> anyhow::Result<()> {
+pub async fn serve(db: Database,activity: ActivityLog,embeddings: EmbeddingEngine, bind_address: &str,) -> anyhow::Result<()> {
     let shared_db = db.clone();
     let shared_activity = activity.clone();
+    let shared_embeddings = embeddings.clone();
     let service = StreamableHttpService::new(
         move || {
             Ok(KnowledgeMcp::new(
                 shared_db.clone(),
                 shared_activity.clone(),
+                shared_embeddings.clone(),
             ))
         },
         LocalSessionManager::default().into(),

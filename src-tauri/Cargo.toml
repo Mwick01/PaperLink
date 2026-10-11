@@ -1,6 +1,6 @@
 [package]
 name = "paperlink"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local-first document retrieval exposed over MCP"
 authors = ["PaperLink"]
 edition = "2021"
@@ -30,4 +30,5 @@ pdf-extract = "0.12.1"
 sha2 = "0.10"
 hex = "0.4"
 regex = "1"
+fastembed = "7"
 rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk", branch = "main", features = ["server", "transport-streamable-http-server"] }
