@@ -12,12 +12,16 @@
   "app": {
     "windows": [
       {
-        "title": "Paper Link",
+        "title": "PaperLink",
         "width": 1180,
         "height": 780,
         "minWidth": 900,
         "minHeight": 650,
-        "resizable": true
+        "resizable": true,
+        "decorations": false,
+        "shadow": true,
+        "theme": "Dark",
+        "backgroundColor": "#08100e"
       }
     ],
     "security": {

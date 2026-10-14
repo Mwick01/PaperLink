@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import TitleBar from "./TitleBar";
 
 type DocumentRow = {
   id: number;
@@ -61,6 +62,30 @@ type FolderImportResult = {
 
 type CollectionSelection = "all" | "unfiled" | number;
 type AppView = "library" | "connect" | "activity";
+type NoticeTone = "info" | "success" | "warning" | "error";
+
+function friendlyError(error: unknown, fallback: string) {
+  const detail = error instanceof Error ? error.message : String(error ?? "");
+  const normalized = detail.toLowerCase();
+
+  if (normalized.includes("permission") || normalized.includes("denied")) {
+    return `${fallback} Check that PaperLink has permission to access the file or folder, then try again.`;
+  }
+
+  if (normalized.includes("cloudflared") || normalized.includes("cloudflare")) {
+    return `${fallback} Check that Cloudflare Tunnel is installed and available, then try again.`;
+  }
+
+  if (normalized.includes("timeout") || normalized.includes("timed out")) {
+    return `${fallback} The operation took too long. Try again.`;
+  }
+
+  if (normalized.includes("network") || normalized.includes("connection")) {
+    return `${fallback} Check your connection and try again.`;
+  }
+
+  return fallback;
+}
 
 type FlatCollection = {
   collection: CollectionRow;
@@ -113,6 +138,10 @@ export default function App() {
   const [selectedCollection, setSelectedCollection] =
     useState<CollectionSelection>("all");
   const [activeView, setActiveView] = useState<AppView>("library");
+  const [folderFormOpen, setFolderFormOpen] = useState(false);
+  const [folderDraft, setFolderDraft] = useState("");
+  const [folderParentId, setFolderParentId] = useState<number | null>(null);
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
 
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -121,8 +150,20 @@ export default function App() {
   const [compatibilityMode, setCompatibilityMode] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState("Ready");
+  const [messageTone, setMessageTone] = useState<NoticeTone>("info");
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [activity, setActivity] = useState<ActivityEvent[]>([]);
+  const [activityError, setActivityError] = useState<string | null>(null);
+  const [hasSearched, setHasSearched] = useState(false);
   const [embeddingStatus, setEmbeddingStatus] = useState("");
+
+  const isWorking = busy !== null;
+
+  function announce(text: string, tone: NoticeTone = "info") {
+    setMessage(text);
+    setMessageTone(tone);
+  }
 
   const endpoint = useMemo(
     () =>
@@ -163,6 +204,15 @@ export default function App() {
     );
   }, [collections, selectedCollection]);
 
+  const folderParentName = useMemo(
+    () =>
+      folderParentId === null
+        ? null
+        : collections.find((collection) => collection.id === folderParentId)?.name ??
+          "folder",
+    [collections, folderParentId],
+  );
+
   const unfiledCount = useMemo(
     () => documents.filter((document) => document.collection_id === null).length,
     [documents],
@@ -190,60 +240,135 @@ export default function App() {
     setCompatibilityMode(nextStatus.compatibility_mode);
   }
 
+  async function refreshAfterChange(
+    successMessage: string,
+    successTone: NoticeTone = "success",
+  ) {
+    try {
+      await refresh();
+      announce(successMessage, successTone);
+    } catch (error) {
+      console.error("Change saved but library refresh failed", error);
+      announce(
+        "Your change was saved, but PaperLink could not refresh the library. Try switching views or restart PaperLink.",
+        "warning",
+      );
+    }
+  }
+
+  async function loadInitialData() {
+    setInitialLoading(true);
+    setLoadError(null);
+
+    try {
+      await refresh();
+      setMessage("Ready");
+      setMessageTone("info");
+    } catch (error) {
+      console.error("Could not load PaperLink library", error);
+      const recovery = friendlyError(
+        error,
+        "PaperLink could not load your library.",
+      );
+      setLoadError(recovery);
+      announce(recovery, "error");
+    } finally {
+      setInitialLoading(false);
+    }
+  }
+
   async function refreshActivity() {
     try {
       const events = await invoke<ActivityEvent[]>("get_activity");
       setActivity(events);
+      setActivityError(null);
     } catch (error) {
-      console.error("Could not load MCP activity", error);
+      console.error("Could not load AI activity", error);
+      setActivityError(
+        friendlyError(error, "PaperLink could not refresh AI activity."),
+      );
     }
   }
 
   useEffect(() => {
-    refresh().catch((error) => setMessage(String(error)));
+    if (folderFormOpen) folderInputRef.current?.focus();
+  }, [folderFormOpen]);
+
+  useEffect(() => {
+    void loadInitialData();
   }, []);
 
   useEffect(() => {
-    refreshActivity();
+    if (activeView !== "activity") return;
 
-    const timer = window.setInterval(() => {
-      refreshActivity();
-    }, 1000);
+    let cancelled = false;
+    let timer: number | undefined;
 
-    return () => window.clearInterval(timer);
-  }, []);
+    const poll = async () => {
+      await refreshActivity();
+      if (!cancelled) {
+        timer = window.setTimeout(() => void poll(), 1500);
+      }
+    };
+
+    void poll();
+
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [activeView]);
+
+  function openCollectionCreator(parentId: number | null) {
+    if (isWorking) return;
+    setFolderParentId(parentId);
+    setFolderDraft("");
+    setFolderFormOpen(true);
+  }
+
+  function closeCollectionCreator() {
+    setFolderFormOpen(false);
+    setFolderDraft("");
+    setFolderParentId(null);
+  }
 
   async function createCollection() {
-    const parentId =
-      typeof selectedCollection === "number" ? selectedCollection : null;
+    if (isWorking) return;
 
-    const name = window.prompt(
-      parentId
-        ? `New folder inside "${selectedCollectionName}"`
-        : "New PaperLink folder",
-    );
+    const trimmedName = folderDraft.trim();
+    if (!trimmedName) {
+      announce("Enter a folder name.", "error");
+      folderInputRef.current?.focus();
+      return;
+    }
 
-    if (!name?.trim()) return;
+    if (trimmedName.length > 120) {
+      announce("Folder names can be up to 120 characters.", "error");
+      folderInputRef.current?.focus();
+      return;
+    }
 
     try {
       setBusy("create-collection");
 
       const collectionId = await invoke<number>("create_collection", {
-        name: name.trim(),
-        parentId,
+        name: trimmedName,
+        parentId: folderParentId,
       });
 
-      await refresh();
       setSelectedCollection(collectionId);
-      setMessage(`Created folder "${name.trim()}"`);
+      closeCollectionCreator();
+      await refreshAfterChange(`Created folder "${trimmedName}".`);
     } catch (error) {
-      setMessage(`Could not create folder: ${String(error)}`);
+      console.error("Could not create folder", error);
+      announce(friendlyError(error, "Could not create this folder."), "error");
     } finally {
       setBusy(null);
     }
   }
 
   async function deleteSelectedCollection() {
+    if (isWorking) return;
     if (typeof selectedCollection !== "number") return;
 
     const collection = collections.find(
@@ -266,10 +391,11 @@ export default function App() {
       });
 
       setSelectedCollection("all");
-      await refresh();
-      setMessage(`Deleted folder "${collection.name}"`);
+      if (folderParentId === collection.id) closeCollectionCreator();
+      await refreshAfterChange(`Deleted folder "${collection.name}".`);
     } catch (error) {
-      setMessage(`Could not delete folder: ${String(error)}`);
+      console.error("Could not delete folder", error);
+      announce(friendlyError(error, "Could not delete this folder."), "error");
     } finally {
       setBusy(null);
     }
@@ -279,6 +405,7 @@ export default function App() {
     documentId: number,
     collectionId: number | null,
   ) {
+    if (isWorking) return;
     try {
       setBusy(`move-${documentId}`);
 
@@ -287,20 +414,21 @@ export default function App() {
         collectionId,
       });
 
-      await refresh();
-      setMessage(
+      await refreshAfterChange(
         collectionId === null
-          ? "Moved paper to Unfiled"
-          : "Moved paper to folder",
+          ? "Moved paper to Unfiled."
+          : "Moved paper to folder.",
       );
     } catch (error) {
-      setMessage(`Move failed: ${String(error)}`);
+      console.error("Could not move paper", error);
+      announce(friendlyError(error, "Could not move this paper."), "error");
     } finally {
       setBusy(null);
     }
   }
 
   async function buildEmbeddings() {
+    if (isWorking) return;
     try {
       setBusy("embeddings");
       setEmbeddingStatus("Refreshing the search index…");
@@ -313,24 +441,30 @@ export default function App() {
           : `Updated ${count} searchable sections.`,
       );
     } catch (error) {
-      setEmbeddingStatus(`Could not refresh the search index: ${String(error)}`);
+      console.error("Could not refresh search index", error);
+      setEmbeddingStatus(
+        friendlyError(error, "Could not refresh the search index. Try again."),
+      );
     } finally {
       setBusy(null);
     }
   }
 
   async function addPdf() {
-    const selected = await open({
-      multiple: false,
-      directory: false,
-      filters: [{ name: "PDF documents", extensions: ["pdf"] }],
-    });
-
-    if (!selected || Array.isArray(selected)) return;
+    if (isWorking) return;
 
     try {
       setBusy("import");
-      setMessage("Adding your paper and preparing it for search…");
+
+      const selected = await open({
+        multiple: false,
+        directory: false,
+        filters: [{ name: "PDF documents", extensions: ["pdf"] }],
+      });
+
+      if (!selected || Array.isArray(selected)) return;
+
+      announce("Adding your paper and preparing it for search…");
 
       const result = await invoke<ImportResult>("import_pdf", {
         path: selected,
@@ -343,53 +477,56 @@ export default function App() {
         });
       }
 
-      setMessage(
+      await refreshAfterChange(
         `Added ${result.filename}. It is ready to search with AI.`,
       );
-
-      await refresh();
     } catch (error) {
-      setMessage(`Could not add this PDF: ${String(error)}`);
+      console.error("Could not add PDF", error);
+      announce(friendlyError(error, "Could not add this PDF."), "error");
     } finally {
       setBusy(null);
     }
   }
 
   async function addFolder() {
-    const selected = await open({
-      directory: true,
-      multiple: false,
-    });
-
-    if (!selected || Array.isArray(selected)) return;
+    if (isWorking) return;
 
     try {
       setBusy("folder");
-      setMessage("Adding PDFs from this folder and preparing them for search…");
+
+      const selected = await open({
+        directory: true,
+        multiple: false,
+      });
+
+      if (!selected || Array.isArray(selected)) return;
+
+      announce("Adding PDFs from this folder and preparing them for search…");
 
       const result = await invoke<FolderImportResult>("import_folder", {
         path: selected,
       });
 
-      setMessage(
-        `Added ${result.imported} of ${result.discovered} PDFs${
-          result.failed > 0 ? ` · ${result.failed} could not be added` : ""
-        }.`,
-      );
-
       if (result.failed > 0) {
         console.warn("Some PDFs failed:", result.errors);
       }
 
-      await refresh();
+      await refreshAfterChange(
+        `Added ${result.imported} of ${result.discovered} PDFs${
+          result.failed > 0 ? ` · ${result.failed} could not be added` : ""
+        }.`,
+        result.failed > 0 ? "warning" : "success",
+      );
     } catch (error) {
-      setMessage(`Could not import this folder: ${String(error)}`);
+      console.error("Could not import folder", error);
+      announce(friendlyError(error, "Could not import this folder."), "error");
     } finally {
       setBusy(null);
     }
   }
 
   async function reindexDocument(documentId: number) {
+    if (isWorking) return;
     try {
       setBusy(`reindex-${documentId}`);
 
@@ -397,16 +534,17 @@ export default function App() {
         documentId,
       });
 
-      setMessage(`Refreshed ${result.filename} for search.`);
-      await refresh();
+      await refreshAfterChange(`Refreshed ${result.filename} for search.`);
     } catch (error) {
-      setMessage(`Could not refresh this paper: ${String(error)}`);
+      console.error("Could not refresh paper", error);
+      announce(friendlyError(error, "Could not refresh this paper."), "error");
     } finally {
       setBusy(null);
     }
   }
 
   async function deleteDocument(documentId: number, filename: string) {
+    if (isWorking) return;
     const confirmed = window.confirm(
       `Remove "${filename}" from PaperLink?\n\nThe original PDF will not be deleted from your computer.`,
     );
@@ -424,54 +562,72 @@ export default function App() {
         current.filter((result) => result.document_id !== documentId),
       );
 
-      setMessage(`Removed ${filename} from PaperLink`);
-      await refresh();
+      await refreshAfterChange(`Removed ${filename} from PaperLink.`);
     } catch (error) {
-      setMessage(`Could not remove this paper: ${String(error)}`);
+      console.error("Could not remove paper", error);
+      announce(friendlyError(error, "Could not remove this paper."), "error");
     } finally {
       setBusy(null);
     }
   }
 
   async function search() {
-    if (!query.trim()) return;
+    const trimmedQuery = query.trim();
+    if (!trimmedQuery || isWorking) return;
 
     try {
       setBusy("search");
+      setHasSearched(false);
+      setResults([]);
 
       const found = await invoke<SearchResult[]>("search_hybrid", {
-        query,
+        query: trimmedQuery,
         limit: 8,
       });
 
       setResults(found);
-      setMessage(`${found.length} search result${found.length === 1 ? "" : "s"}`);
+      setHasSearched(true);
+      announce(
+        `${found.length} search result${found.length === 1 ? "" : "s"}.`,
+        "success",
+      );
     } catch (error) {
-      setMessage(`Search failed: ${String(error)}`);
+      console.error("Search failed", error);
+      setHasSearched(false);
+      announce(friendlyError(error, "Search could not finish. Try again."), "error");
     } finally {
       setBusy(null);
     }
   }
 
   async function startTunnel() {
+    if (isWorking) return;
     try {
       setBusy("tunnel");
-      setMessage("Creating a temporary secure internet connection…");
+      announce("Creating a temporary secure internet connection…");
 
       const connection = await invoke<TunnelConnection>("start_tunnel");
 
       setTunnelUrl(connection.url);
       setAccessToken(connection.token);
       setCompatibilityMode(false);
-      setMessage("Internet connection is ready. Password protection is on.");
+      announce(
+        "Internet connection is ready. Password protection is on.",
+        "success",
+      );
     } catch (error) {
-      setMessage(`Could not create the connection: ${String(error)}`);
+      console.error("Could not create internet connection", error);
+      announce(
+        friendlyError(error, "Could not create the internet connection."),
+        "error",
+      );
     } finally {
       setBusy(null);
     }
   }
 
   async function stopTunnel() {
+    if (isWorking) return;
     try {
       setBusy("tunnel-stop");
 
@@ -480,15 +636,20 @@ export default function App() {
       setTunnelUrl(null);
       setAccessToken(null);
       setCompatibilityMode(false);
-      setMessage("Temporary internet connection stopped.");
+      announce("Temporary internet connection stopped.", "success");
     } catch (error) {
-      setMessage(`Could not stop the connection: ${String(error)}`);
+      console.error("Could not stop internet connection", error);
+      announce(
+        friendlyError(error, "Could not stop the internet connection."),
+        "error",
+      );
     } finally {
       setBusy(null);
     }
   }
 
   async function setClaudeCompatibility(enabled: boolean) {
+    if (isWorking) return;
     if (enabled) {
       const confirmed = window.confirm(
         "Allow this temporary connection without a password?\n\nAnyone who gets the temporary link could use your PaperLink tools until you turn this off or stop the connection.",
@@ -506,60 +667,68 @@ export default function App() {
 
       setCompatibilityMode(enabled);
 
-      setMessage(
+      announce(
         enabled
           ? "Password protection is off for this temporary connection."
           : "Password protection is back on.",
+        enabled ? "warning" : "success",
       );
     } catch (error) {
-      setMessage(`Could not change connection security: ${String(error)}`);
+      console.error("Could not change connection security", error);
+      announce(
+        friendlyError(error, "Could not change connection security."),
+        "error",
+      );
     } finally {
       setBusy(null);
     }
   }
 
   async function copyEndpoint() {
-    await navigator.clipboard.writeText(endpoint);
-    setMessage("Connection address copied.");
+    try {
+      await navigator.clipboard.writeText(endpoint);
+      announce("Connection address copied.", "success");
+    } catch (error) {
+      console.error("Could not copy connection address", error);
+      announce("Could not copy the address. Select it and copy it manually.", "error");
+    }
   }
 
   async function copyToken() {
     if (!accessToken) return;
-    await navigator.clipboard.writeText(accessToken);
-    setMessage("Connection password copied.");
+
+    try {
+      await navigator.clipboard.writeText(accessToken);
+      announce("Connection password copied.", "success");
+    } catch (error) {
+      console.error("Could not copy connection password", error);
+      announce("Could not copy the password. Select it and copy it manually.", "error");
+    }
   }
 
   return (
-    <main className="shell">
-      <header className="app-header">
-        <button
-          className="brand"
-          type="button"
-          onClick={() => setActiveView("library")}
-          aria-label="Open your PaperLink library"
-        >
-          <span className="brand-mark" aria-hidden="true">P</span>
-          <span>
-            <strong>PaperLink</strong>
-            <small>Your papers, ready for AI</small>
-          </span>
-        </button>
-
+    <>
+      <TitleBar />
+      <main className="shell">
+        <header className="app-header">
         <nav className="primary-nav" aria-label="Main navigation">
           <button
             className={activeView === "library" ? "active" : ""}
+            aria-current={activeView === "library" ? "page" : undefined}
             onClick={() => setActiveView("library")}
           >
             Library
           </button>
           <button
             className={activeView === "connect" ? "active" : ""}
+            aria-current={activeView === "connect" ? "page" : undefined}
             onClick={() => setActiveView("connect")}
           >
             Connect AI
           </button>
           <button
             className={activeView === "activity" ? "active" : ""}
+            aria-current={activeView === "activity" ? "page" : undefined}
             onClick={() => setActiveView("activity")}
           >
             Activity
@@ -573,7 +742,11 @@ export default function App() {
       </header>
 
       {message !== "Ready" && (
-        <div className="app-message" role="status" aria-live="polite">
+        <div
+          className={`app-message ${messageTone}`}
+          role={messageTone === "error" ? "alert" : "status"}
+          aria-live={messageTone === "error" ? "assertive" : "polite"}
+        >
           {message}
         </div>
       )}
@@ -585,23 +758,34 @@ export default function App() {
               <h1>Your papers</h1>
               <p>Keep past papers organized and ready to search with AI.</p>
               <div className="library-summary">
-                <strong>{status?.document_count ?? 0}</strong> papers
+                <strong>{initialLoading ? "—" : status?.document_count ?? 0}</strong> papers
                 <span aria-hidden="true">·</span>
-                <strong>{status?.chunk_count ?? 0}</strong> searchable sections
+                <strong>{initialLoading ? "—" : status?.chunk_count ?? 0}</strong> searchable sections
               </div>
             </div>
 
             <div className="page-actions">
-              <button className="secondary" onClick={addFolder} disabled={busy === "folder"}>
+              <button className="secondary" onClick={addFolder} disabled={isWorking}>
                 {busy === "folder" ? "Adding folder…" : "Import folder"}
               </button>
-              <button onClick={addPdf} disabled={busy === "import"}>
+              <button onClick={addPdf} disabled={isWorking}>
                 {busy === "import" ? "Adding paper…" : "Add PDF"}
               </button>
             </div>
           </section>
 
-          {documents.length === 0 ? (
+          {initialLoading ? (
+            <section className="state-panel" aria-busy="true" aria-live="polite">
+              <strong>Loading your library…</strong>
+              <span>Getting your papers and folders ready.</span>
+            </section>
+          ) : loadError ? (
+            <section className="state-panel error-state" role="alert">
+              <strong>Couldn’t load your library</strong>
+              <span>{loadError}</span>
+              <button onClick={() => void loadInitialData()}>Try again</button>
+            </section>
+          ) : documents.length === 0 ? (
             <section className="first-run">
               <div className="first-run-copy">
                 <h2>Add your first past paper</h2>
@@ -611,10 +795,10 @@ export default function App() {
                 </p>
               </div>
               <div className="first-run-actions">
-                <button onClick={addPdf} disabled={busy === "import"}>
+                <button onClick={addPdf} disabled={isWorking}>
                   Add a PDF
                 </button>
-                <button className="secondary" onClick={addFolder} disabled={busy === "folder"}>
+                <button className="secondary" onClick={addFolder} disabled={isWorking}>
                   Import a folder
                 </button>
               </div>
@@ -629,12 +813,58 @@ export default function App() {
                   <strong>My library</strong>
                   <button
                     className="text-button"
-                    onClick={createCollection}
-                    disabled={busy === "create-collection"}
+                    onClick={() => openCollectionCreator(null)}
+                    disabled={isWorking}
                   >
                     New folder
                   </button>
                 </div>
+
+                {folderFormOpen && (
+                  <form
+                    className="new-folder-form"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void createCollection();
+                    }}
+                  >
+                    <label>
+                      <span>
+                        {folderParentName
+                          ? `New folder inside ${folderParentName}`
+                          : "New folder"}
+                      </span>
+                      <input
+                        ref={folderInputRef}
+                        value={folderDraft}
+                        onChange={(event) => setFolderDraft(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Escape") closeCollectionCreator();
+                        }}
+                        maxLength={120}
+                        placeholder="e.g. Mathematics 2026"
+                        aria-label="Folder name"
+                      />
+                    </label>
+                    <div className="new-folder-actions">
+                      <button
+                        type="button"
+                        className="secondary small"
+                        onClick={closeCollectionCreator}
+                        disabled={isWorking}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        className="small"
+                        disabled={isWorking || !folderDraft.trim()}
+                      >
+                        {busy === "create-collection" ? "Creating…" : "Create"}
+                      </button>
+                    </div>
+                  </form>
+                )}
 
                 <button
                   className={`folder-row ${selectedCollection === "all" ? "active" : ""}`}
@@ -664,7 +894,7 @@ export default function App() {
                       className={`folder-row ${
                         selectedCollection === collection.id ? "active" : ""
                       }`}
-                      style={{ paddingLeft: `${12 + depth * 16}px` }}
+                      style={{ paddingInlineStart: `${12 + depth * 16}px` }}
                       onClick={() => setSelectedCollection(collection.id)}
                     >
                       <span>{collection.name}</span>
@@ -691,8 +921,14 @@ export default function App() {
                       <>
                         <button
                           className="secondary small"
-                          onClick={createCollection}
-                          disabled={busy === "create-collection"}
+                          onClick={() =>
+                            openCollectionCreator(
+                              typeof selectedCollection === "number"
+                                ? selectedCollection
+                                : null,
+                            )
+                          }
+                          disabled={isWorking}
                         >
                           New subfolder
                         </button>
@@ -702,7 +938,7 @@ export default function App() {
                             <button
                               className="menu-danger"
                               onClick={deleteSelectedCollection}
-                              disabled={busy === "delete-collection"}
+                              disabled={isWorking}
                             >
                               Delete folder
                             </button>
@@ -716,7 +952,7 @@ export default function App() {
                       <div className="menu-popover">
                         <button
                           onClick={buildEmbeddings}
-                          disabled={busy === "embeddings"}
+                          disabled={isWorking}
                         >
                           Refresh search index
                         </button>
@@ -741,8 +977,6 @@ export default function App() {
 
                   {visibleDocuments.map((doc) => {
                     const reindexing = busy === `reindex-${doc.id}`;
-                    const deleting = busy === `delete-${doc.id}`;
-                    const moving = busy === `move-${doc.id}`;
 
                     return (
                       <div className="document-row" key={doc.id}>
@@ -758,7 +992,7 @@ export default function App() {
                             <span>Folder</span>
                             <select
                               value={doc.collection_id ?? ""}
-                              disabled={moving || reindexing || deleting}
+                              disabled={isWorking}
                               onChange={(event) => {
                                 const value = event.target.value;
                                 moveDocument(
@@ -783,14 +1017,14 @@ export default function App() {
                             <div className="menu-popover">
                               <button
                                 onClick={() => reindexDocument(doc.id)}
-                                disabled={reindexing || deleting || moving}
+                                disabled={isWorking}
                               >
                                 {reindexing ? "Refreshing…" : "Refresh for search"}
                               </button>
                               <button
                                 className="menu-danger"
                                 onClick={() => deleteDocument(doc.id, doc.filename)}
-                                disabled={reindexing || deleting || moving}
+                                disabled={isWorking}
                               >
                                 Remove from PaperLink
                               </button>
@@ -818,7 +1052,19 @@ export default function App() {
             </div>
           </section>
 
-          <section className="connection-panel">
+          {initialLoading ? (
+            <section className="state-panel" aria-busy="true" aria-live="polite">
+              <strong>Checking PaperLink…</strong>
+              <span>Confirming the local connection is ready.</span>
+            </section>
+          ) : loadError ? (
+            <section className="state-panel error-state" role="alert">
+              <strong>Couldn’t check the connection</strong>
+              <span>{loadError}</span>
+              <button onClick={() => void loadInitialData()}>Try again</button>
+            </section>
+          ) : (
+            <section className="connection-panel">
             <div className="connection-heading">
               <div>
                 <h2>{tunnelUrl ? "Internet connection ready" : "Local connection ready"}</h2>
@@ -839,21 +1085,25 @@ export default function App() {
                 <span className="field-label">Connection address</span>
                 <code>{endpoint}</code>
               </div>
-              <button className="secondary" onClick={copyEndpoint}>
+              <button
+                className="secondary"
+                onClick={copyEndpoint}
+                disabled={isWorking}
+              >
                 Copy address
               </button>
             </div>
 
             <div className="connection-actions">
               {!tunnelUrl ? (
-                <button onClick={startTunnel} disabled={busy === "tunnel"}>
+                <button onClick={startTunnel} disabled={isWorking}>
                   {busy === "tunnel" ? "Connecting…" : "Allow internet connection"}
                 </button>
               ) : (
                 <button
                   className="danger-button"
                   onClick={stopTunnel}
-                  disabled={busy === "tunnel-stop"}
+                  disabled={isWorking}
                 >
                   {busy === "tunnel-stop" ? "Stopping…" : "Stop internet connection"}
                 </button>
@@ -882,7 +1132,7 @@ export default function App() {
                   <input
                     type="checkbox"
                     checked={compatibilityMode}
-                    disabled={busy === "compatibility"}
+                    disabled={isWorking}
                     onChange={(event) =>
                       setClaudeCompatibility(event.target.checked)
                     }
@@ -915,7 +1165,11 @@ export default function App() {
                       <span className="field-label">Connection password</span>
                       <code>{accessToken.slice(0, 8)}••••••••••••••••</code>
                     </div>
-                    <button className="secondary small" onClick={copyToken}>
+                    <button
+                      className="secondary small"
+                      onClick={copyToken}
+                      disabled={isWorking}
+                    >
                       Copy password
                     </button>
                   </div>
@@ -926,7 +1180,8 @@ export default function App() {
                 </p>
               </div>
             </details>
-          </section>
+            </section>
+          )}
         </>
       )}
 
@@ -950,24 +1205,41 @@ export default function App() {
             <div className="search-row">
               <input
                 value={query}
-                onChange={(event) => setQuery(event.target.value)}
+                onChange={(event) => {
+                  setQuery(event.target.value);
+                  if (!event.target.value.trim()) {
+                    setHasSearched(false);
+                    setResults([]);
+                  }
+                }}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") search();
                 }}
                 placeholder="Try a question or topic…"
                 aria-label="Search all papers"
+                maxLength={500}
               />
 
-              <button onClick={search} disabled={busy === "search"}>
+              <button
+                onClick={search}
+                disabled={isWorking || !query.trim()}
+              >
                 {busy === "search" ? "Searching…" : "Search"}
               </button>
             </div>
 
-            <div className="results">
+            <div className="results" aria-live="polite">
+              {hasSearched && busy !== "search" && results.length === 0 && (
+                <div className="empty-state search-empty">
+                  <strong>No matching sections found</strong>
+                  <span>Try a shorter phrase, a different keyword, or a question from another topic.</span>
+                </div>
+              )}
+
               {results.map((result) => (
                 <article className="result" key={result.chunk_id}>
                   <div className="result-meta">
-                    <strong>{result.filename}</strong>
+                    <strong title={result.filename}>{result.filename}</strong>
                     <span>section {result.chunk_index + 1}</span>
                   </div>
                   <p>{result.text}</p>
@@ -982,14 +1254,23 @@ export default function App() {
                 <h2>Recent AI activity</h2>
                 <p>Requests received from connected AI clients.</p>
               </div>
-              <span className="live-label">
+              <span className={`live-label ${activityError ? "retrying" : ""}`}>
                 <span className="status-dot" />
-                Live
+                {activityError ? "Retrying" : "Live"}
               </span>
             </div>
 
-            <div className="activity-list">
-              {activity.length === 0 && (
+            {activityError && (
+              <div className="inline-error" role="alert">
+                <span>{activityError}</span>
+                <button className="secondary small" onClick={() => void refreshActivity()}>
+                  Try again
+                </button>
+              </div>
+            )}
+
+            <div className="activity-list" aria-live="polite">
+              {!activityError && activity.length === 0 && (
                 <div className="empty-state compact-empty">
                   <strong>No AI requests yet</strong>
                   <span>They will appear here when a connected client uses PaperLink.</span>
@@ -998,8 +1279,15 @@ export default function App() {
 
               {activity.map((event) => (
                 <div className="activity-item" key={event.id}>
-                  <time>
-                    {new Date(event.timestamp_ms).toLocaleTimeString()}
+                  <time
+                    dateTime={new Date(event.timestamp_ms).toISOString()}
+                    title={new Date(event.timestamp_ms).toLocaleString()}
+                  >
+                    {new Intl.DateTimeFormat(undefined, {
+                      hour: "numeric",
+                      minute: "2-digit",
+                      second: "2-digit",
+                    }).format(new Date(event.timestamp_ms))}
                   </time>
                   <div className="activity-copy">
                     <strong>{event.tool}</strong>
@@ -1012,6 +1300,7 @@ export default function App() {
           </section>
         </>
       )}
-    </main>
+      </main>
+    </>
   );
 }
