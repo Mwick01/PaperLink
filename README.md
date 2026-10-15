@@ -1,4 +1,5 @@
 # PaperLink
+Built solo for the Grevix AfterCode 2026 hackathon
 
 **PaperLink is a local-first desktop MCP knowledge library for PDFs.**
 
