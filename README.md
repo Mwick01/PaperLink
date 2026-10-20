@@ -5,7 +5,7 @@ Built solo for the Grevix AfterCode 2026 hackathon
 
 Import PDFs, organize them into folders, search them with hybrid keyword + semantic retrieval, and expose only relevant context to MCP-compatible AI clients.
 
-<img width="1920" height="1200" alt="2026-10-20 20-08-30" src="https://github.com/user-attachments/assets/05eec253-acf2-4a7a-9cc8-cad3571998a8" />
+[https://media.giphy.com/media/vFKqnCdLPNOKc/giphy.gif](https://github.com/user-attachments/assets/05eec253-acf2-4a7a-9cc8-cad3571998a8)
 
 
 ## Features
