@@ -1,8 +1,12 @@
 # PaperLink
+Built solo for the Grevix AfterCode 2026 hackathon
 
 **PaperLink is a local-first desktop MCP knowledge library for PDFs.**
 
 Import PDFs, organize them into folders, search them with hybrid keyword + semantic retrieval, and expose only relevant context to MCP-compatible AI clients.
+
+<img width="1905" height="1056" alt="image" src="https://github.com/user-attachments/assets/4b1e74b2-4f1c-4d66-90ff-3545c6aa0286" />
+
 
 ## Features
 
